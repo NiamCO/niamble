@@ -516,7 +516,7 @@ const TARGET_WORDS = [
 ];
 
 // All valid guesses (superset of targets)
-const VALID_WORDS = new Set([
+const VALID_WORDS_ARR = [
 "AAHED","AALII","ABACI","ABACK","ABACS","ABAFT","ABAMP","ABAND","ABASE","ABASH",
 "ABASK","ABATE","ABAYA","ABBED","ABBES","ABBOT","ABCEE","ABEAM","ABEAR","ABELE",
 "ABERS","ABETS","ABHOR","ABIDE","ABIES","ABMHO","ABODE","ABOHM","ABOIL","ABOON",
@@ -726,22 +726,43 @@ const VALID_WORDS = new Set([
 "WORMY","WORRY","WORSE","WORST","WORTH","WOULD","WOUND","WRATH","WRING","WRIST",
 "WRITE","WRONG","WROTE","YACHT","YAHOO","YAPPY","YEARN","YIELD","YODEL","YOKEL",
 "YOUNG","YOUTH","ZAPPY","ZEBRA","ZILCH","ZINGY","ZIPPY","ZONAL"
-]);
+];
 
-// Add all target words to valid set too
-TARGET_WORDS.forEach(function(w){ VALID_WORDS.add(w); });
+// LOCAL_VALID: instant Set lookup for all known words
+const LOCAL_VALID = new Set(TARGET_WORDS.concat(VALID_WORDS_ARR));
 
-function isValid(word) {
-  return VALID_WORDS.has(word);
+// API result cache — avoid hitting the API twice for the same word
+const apiCache = {};
+
+async function isValid(word) {
+  const w = word.toLowerCase();
+
+  // file:// can't make cross-origin requests — accept anything
+  if (location.protocol === 'file:') return true;
+
+  // Return cached result instantly
+  if (apiCache[w] !== undefined) return apiCache[w];
+
+  // Call the dictionary API — this is the primary validator
+  try {
+    const res = await fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + w);
+    apiCache[w] = res.ok;
+    return res.ok;
+  } catch (e) {
+    // Network down / CORS error — fall back to local list so game still works
+    const fallback = LOCAL_VALID.has(word);
+    apiCache[w] = fallback;
+    return fallback;
+  }
 }
 
-let board, row, col, target, status, letterState;
+let board, row, col, target, status, letterState, submitting=false;
 const stats = { played:0, won:0, streak:0, max:0, dist:[0,0,0,0,0,0] };
 const cfg = { hard:false, hc:false };
 
 function resetState() {
   board = Array.from({length:6}, function(){ return Array(5).fill(''); });
-  row=0; col=0; status='playing'; letterState={};
+  row=0; col=0; status='playing'; letterState={}; submitting=false;
   target = TARGET_WORDS[Math.floor(Math.random()*TARGET_WORDS.length)];
   console.log('target:', target);
 }
@@ -761,7 +782,7 @@ function buildBoard() {
 function T(r,c){ return document.getElementById('t-'+r+'-'+c); }
 
 document.addEventListener('keydown', function(e) {
-  if (status!=='playing'||e.ctrlKey||e.metaKey||e.altKey) return;
+  if (status!=='playing'||submitting||e.ctrlKey||e.metaKey||e.altKey) return;
   var k=e.key;
   if (k==='Enter') trySubmit();
   else if (k==='Backspace') del();
@@ -770,7 +791,7 @@ document.addEventListener('keydown', function(e) {
 
 document.querySelectorAll('.key').forEach(function(k) {
   k.addEventListener('click', function() {
-    if (status!=='playing') return;
+    if (status!=='playing'||submitting) return;
     var v=k.dataset.key;
     if (v==='Enter') trySubmit();
     else if (v==='Backspace') del();
@@ -790,11 +811,40 @@ function del() {
   var t=T(row,col); t.textContent=''; delete t.dataset.state;
 }
 
-function trySubmit() {
-  if (col<5) { toast('Not enough letters'); shakeRow(row); return; }
-  var guess=board[row].join('');
-  if (!isValid(guess)) { toast('Not in word list'); shakeRow(row); return; }
-  if (cfg.hard && !hardCheck(guess)) return;
+async function trySubmit() {
+  if (submitting) return;
+  submitting = true;
+
+  if (col < 5) {
+    toast('Not enough letters');
+    shakeRow(row);
+    submitting = false;
+    return;
+  }
+
+  var guess = board[row].join('');
+
+  // Show a subtle checking state on the tiles
+  for (var c = 0; c < 5; c++) T(row, c).style.outline = '2px solid #878a8c';
+
+  var valid = await isValid(guess);
+
+  // Clear checking state
+  for (var c = 0; c < 5; c++) T(row, c).style.outline = '';
+
+  if (!valid) {
+    toast('Not in word list');
+    shakeRow(row);
+    submitting = false;
+    return;
+  }
+
+  if (cfg.hard && !hardCheck(guess)) {
+    submitting = false;
+    return;
+  }
+
+  submitting = false;
   submit(guess);
 }
 
